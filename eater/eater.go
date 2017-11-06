@@ -3,7 +3,6 @@ package eater
 import (
 	"bufio"
 	"bytes"
-	"log"
 	"regexp"
 	"strings"
 )
@@ -24,9 +23,7 @@ func ExtractJSONString(haystack, needle string) string {
 	scanner.Buffer([]byte{}, 512*1024) // yes, 512kB
 	for scanner.Scan() {
 		if strings.HasPrefix(scanner.Text(), needle) {
-			log.Print("FOUND", scanner.Text()[0:len(needle)])
 			e := strings.Index(scanner.Text(), "=")
-
 			return scanner.Text()[e+1:]
 		}
 	}

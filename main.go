@@ -5,21 +5,21 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/ioutil"
 	"log"
+	"math"
 	"math/rand"
 	"net/http"
 	"os"
+	"path"
 	"strconv"
 	"strings"
 	"sync"
 
-	"io"
-
-	"path"
-
-	"github.com/PuerkitoBio/goquery"
+	"github.com/gorilla/handlers"
 	"github.com/jrwren/ugly_brysen/eater"
+
 	"golang.org/x/oauth2"
 	"golang.org/x/oauth2/github"
 )
@@ -30,7 +30,7 @@ const (
 )
 
 /* goal: return this data for any quote:
-/Apple Inc. (AAPL) -> 168.82 (+2.10 +1.26%) |
+Apple Inc. (AAPL) -> 168.82 (+2.10 +1.26%) |
 52w L/H 104.08/169.65 | P/E: 19.17 |
 Div/yield: 2.52/1.55
 
@@ -39,17 +39,20 @@ P/S would be a nice bonus.
 
 // Quote is a quote.
 type Quote struct {
-	Symbol    string
-	Name      string
-	Price     float64
-	Change    float64
-	PctChange float64
-	_52wkHigh float64
-	_52wkLow  float64
-	PE        float64
-	Div       float64
-	Yield     float64
-	PS        float64
+	Symbol           string   `json:"symbol"`
+	Name             string   `json:"name"`
+	Price            mfloat64 `json:"price"`
+	Change           mfloat64 `json:"change"`
+	ChangePct        mfloat64 `json:"changepct"`
+	DayHigh          mfloat64 `json:"day_high,omitempty"`
+	DayLow           mfloat64 `json:"day_low,omitemptyw"`
+	FiftyTwoWeekHigh mfloat64 `json:"fifty_two_week_high,omitemptyh"`
+	FiftyTwoWeekLow  mfloat64 `json:"fifty_two_week_low,omitemptyw"`
+	PE               mfloat64 `json:"pe,omitempty"`
+	PB               mfloat64 `json:"pb,omitempty"`
+	PS               mfloat64 `json:"ps,omitemptys"`
+	Div              mfloat64 `json:"div,omitempty"`
+	Yield            mfloat64 `json:"yield,omitempty"`
 }
 
 // User will be a GH user when I make oauth2 GH work.
@@ -66,8 +69,9 @@ var (
 )
 
 func main() {
+	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	sessions = make(map[string]User)
-	loadSessions()
+	//loadSessions()
 	ctx := context.Background()
 	conf := &oauth2.Config{
 		ClientID:     "",
@@ -106,8 +110,9 @@ func main() {
 			user.Email, user.Name)
 
 	}
-	http.HandleFunc("/", root)
-	http.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
+	r := http.NewServeMux()
+	r.HandleFunc("/", root)
+	r.HandleFunc("/auth", func(w http.ResponseWriter, r *http.Request) {
 		code := r.URL.Query().Get("code")
 		tok, err := conf.Exchange(ctx, code)
 		if err != nil {
@@ -154,10 +159,20 @@ func main() {
 		http.SetCookie(w, cookie)
 		http.Redirect(w, r, "/", http.StatusFound)
 		fmt.Fprintf(w, "success, redirecting to main page")
-
 	})
-	http.HandleFunc("/quote", quote)
-	log.Fatal(http.ListenAndServe(":8081", nil))
+	r.HandleFunc("/quote", quote)
+	log.Fatal(http.ListenAndServe(":8081", t(handlers.LoggingHandler(os.Stdout,
+		handlers.CompressHandler(r)))))
+}
+
+func t(h http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasPrefix(r.RemoteAddr, "204.44.116.103") {
+			http.Error(w, fmt.Sprintf("nope"), http.StatusForbidden)
+			return
+		}
+		h.ServeHTTP(w, r)
+	})
 }
 
 func loadSessions() {
@@ -186,13 +201,11 @@ func etradequote(w http.ResponseWriter, r *http.Request) {
 }
 
 func quote(w http.ResponseWriter, r *http.Request) {
-	log.Print(r)
 	name := r.URL.Query().Get("name")
 	name = strings.TrimSpace(name)
 	var rdoc io.Reader
-	cf, err := os.Open(path.Join(cachepath, name))
+	cf, err := os.Open(path.Join(cachepath, strings.ToLower(name)))
 	if err != nil {
-		log.Print(err)
 		rget, err := http.Get("https://finance.yahoo.com/quote/" + name)
 		if err != nil {
 			fmt.Println("ERROR ", err)
@@ -201,7 +214,7 @@ func quote(w http.ResponseWriter, r *http.Request) {
 		}
 		defer rget.Body.Close()
 
-		ct, err := os.Create(path.Join(cachepath, name))
+		ct, err := os.Create(path.Join(cachepath, strings.ToLower(name)))
 		if err != nil {
 			log.Print(err)
 		}
@@ -221,50 +234,147 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	d := make(map[string]map[string]map[string]map[string]interface{})
 
 	err = json.Unmarshal([]byte(o_o), &d)
-	if err != nil {
-		log.Print(err)
-	}
+	/*
+		if err != nil {
+			log.Printf("%v: doc: %s\n", err, o_o[0:minsl(10, o_o)])
+		}*/
 	// .context.dispatcher.stores.PageStore.pageData
 	// .context.dispatcher.stores.QuoteSummaryStore
 	stores := d["context"]["dispatcher"]["stores"]
 	respjson := make(map[string]interface{})
-	ps, ok := stores["PageStore"].(map[string]interface{})
+	pagestore, ok := stores["PageStore"].(map[string]interface{})
 	if !ok {
-		log.Print("pagestore not map[string]interface{}")
+		log.Printf("pagestore not map[string]interface{} %#v\nstores:%#v\n", stores["PageStore"], stores)
 		w.WriteHeader(http.StatusServiceUnavailable)
 		return
 	}
-	respjson["otherjunk"] = ps["pageData"]
+	respjson["otherjunk"] = pagestore["pageData"]
 	respjson["quote"] = stores["QuoteSummaryStore"]
-	err = json.NewEncoder(w).Encode(respjson)
-	if err != nil {
-		log.Print(err)
+	if strings.Contains(r.Header.Get("Accept"), "json") && r.URL.Query().Get("full") == "true" {
+		err = json.NewEncoder(w).Encode(respjson)
+		if err != nil {
+			log.Print(err)
+		}
+		return
 	}
+	quote, ok := stores["QuoteSummaryStore"].(map[string]interface{})
+	if !ok {
+		w.WriteHeader(http.StatusNotFound)
+		return
+	}
+
+	pd := pagestore["pageData"].(map[string]interface{})
+	title := pd["title"].(string)
+	summaryi := strings.Index(title, "Summary for")
+	title = title[summaryi+12:]
+	dashY := strings.Index(title, " - Yahoo Finance")
+	fullname := title[:dashY]
+
+	price := quote["price"].(map[string]interface{})
+	defaultKeyStats := quote["defaultKeyStatistics"].(map[string]interface{}) // has forwardPE, enterpriseValue
+	pb := getrawfloat(defaultKeyStats["priceToBook"])
+
+	summaryDetail := quote["summaryDetail"].(map[string]interface{})
+	ps := getrawfloat(summaryDetail["priceToSalesTrailing12Months"])
+	if math.IsNaN(float64(ps)) {
+		ps = getrawfloat(defaultKeyStats["priceToSalesTrailing12Months"])
+	}
+
+	financialData := quote["financialData"].(map[string]interface{})
+	cprice := getrawfloat(financialData["currentPrice"])
+
+	change := getrawfloat(price["regularMarketChange"])
+	changepct := getrawfloat(price["regularMarketChangePercent"]) * 100
+	yrhi := getrawfloat(summaryDetail["fiftyTwoWeekHigh"])
+	yrlo := getrawfloat(summaryDetail["fiftyTwoWeekLow"])
+	dayhi := getrawfloat(price["regularMarketDayHigh"])
+	daylo := getrawfloat(price["regularMarketDayLow"])
+	pe := getrawfloat(summaryDetail["forwardPE"])
+	div := getrawfloat(summaryDetail["dividendRate"])
+	yield := getrawfloat(summaryDetail["dividendYield"]) * 100
+
+	if strings.Contains(r.Header.Get("Accept"), "json") {
+		q := Quote{
+			Name:             fullname,
+			Symbol:           name,
+			Price:            cprice,
+			Change:           change,
+			ChangePct:        changepct,
+			DayHigh:          dayhi,
+			DayLow:           daylo,
+			FiftyTwoWeekHigh: yrhi,
+			FiftyTwoWeekLow:  yrlo,
+			PE:               pe,
+			PB:               pb,
+			PS:               ps,
+			Div:              div,
+			Yield:            yield,
+		}
+		err = json.NewEncoder(w).Encode(q)
+		if err != nil {
+			log.Print(err)
+		}
+		return
+	}
+	title = fmt.Sprintf("%s (%s) -> %.2f (%+.2f %+.2f%%) | Day L/H %v/%v | 52w L/H %v/%v | P/E: %v | P/S: %v | P/B %v | Div/yield %v/%v",
+		fullname, strings.ToUpper(name), cprice, change, changepct, dayhi, daylo,
+		yrhi, yrlo, pe,
+		ps, pb, div, yield)
+	body := "<h1>hello</h1>\n" + title
+	htmlResponseWithTitle(w, title, body)
 }
 
-func wTFquery(rdoc io.Reader, name string, w http.ResponseWriter) {
-	// doc, err := goquery.NewDocument("https://finance.yahoo.com/quote/" + name)
-	doc, err := goquery.NewDocumentFromReader(rdoc)
-	if err != nil {
-		fmt.Println("ERROR ", err)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
+func getrawfloat(i interface{}) mfloat64 {
+	//return i.(map[string]interface{})["raw"].(float64)
+	m, ok := i.(map[string]interface{})
+	if !ok {
+		log.Printf("could not convert %#v to raw val 1\n", i)
+		return mfloat64(math.NaN())
 	}
-	fmt.Printf("%#v", doc)
-	// //*[@id="quote-header-info"]/div[3]/div[1]/div/span[1]/text()
-	qe := doc.Find(`#quote-header-info > div.Mt\(6px\).smartphone_Mt\(15px\) > div.D\(ib\).Maw\(65\%\).Maw\(70\%\)--tab768.Ov\(h\) > div > span.Trsdu\(0\.3s\).Fw\(b\).Fz\(36px\).Mb\(-4px\).D\(ib\)`).First()
-	p, err := strconv.ParseFloat(qe.Text(), 64)
-	if err != nil {
-		fmt.Println("ERROR ", err)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
+	r, ok := m["raw"]
+	if !ok {
+		// I guess this is pretty common
+		//log.Printf("could not convert %#v to raw val 2\n", i)
+		return mfloat64(math.NaN())
 	}
-	cop := doc.Find(`#quote-header-info > div.Mt\(15px\) > div.D\(ib\).Mt\(-5px\).Mend\(20px\).Maw\(56\%\)--tab768.Maw\(52\%\).Ov\(h\).smartphone_Maw\(85\%\).smartphone_Mend\(10px\) > div.D\(ib\) > h1`).First()
-	co := cop.Text()
-	q := &Quote{
-		Symbol: name,
-		Name:   co,
-		Price:  p,
+	f, ok := r.(float64)
+	if !ok {
+		log.Printf("could not convert %#v to raw val 3\n", i)
+		return mfloat64(math.NaN())
 	}
-	json.NewEncoder(w).Encode(q)
+	return mfloat64(f)
+}
+
+type mfloat64 float64
+
+func (f mfloat64) String() string {
+	if math.IsNaN(float64(f)) {
+		return "-"
+	}
+	return fmt.Sprintf("%.2f", f)
+}
+
+func (v mfloat64) MarshalJSON() ([]byte, error) {
+	type optional struct {
+	}
+	if math.IsNaN(float64(v)) || math.IsInf(float64(v), 0) {
+		return []byte("{}"), nil
+	}
+	return []byte(fmt.Sprintf("{\"value\": %f }", v)), nil
+}
+
+func htmlResponseWithTitle(w http.ResponseWriter, title, body string) {
+	fmt.Fprintf(w, `<!DOCTYPE html>
+<html>
+<head><title>%s</title><meta name="note" content="add http header 'Accept: json' for json response"></head>
+	<body>%s</body>
+</html>`, title, body)
+}
+
+// minsl min string len
+func minsl(i int, s string) int {
+	if len(s) < i {
+		return len(s)
+	}
+	return i
 }
