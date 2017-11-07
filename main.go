@@ -16,6 +16,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/gorilla/handlers"
 	"github.com/jrwren/ugly_brysen/eater"
@@ -188,25 +189,27 @@ func loadSessions() {
 	}
 }
 
-func etradequote(w http.ResponseWriter, r *http.Request) {
-	log.Print(r)
-	name := r.URL.Query().Get("name")
-	name = strings.TrimSpace(name)
-	resp, err := http.Get("https://etws.etrade.com/market/rest/quote/" + name + ".json?detailFlag=FUNDAMENTAL")
-	if err != nil || resp.StatusCode != http.StatusOK {
-		fmt.Println("ERROR ", err, resp.StatusCode)
-		w.WriteHeader(http.StatusServiceUnavailable)
-		return
-	}
-	fmt.Printf("%#v\n", resp)
-}
-
 func quote(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	name = strings.TrimSpace(name)
 	var rdoc io.Reader
+	fetch := false
 	cf, err := os.Open(path.Join(cachepath, strings.ToLower(name)))
 	if err != nil {
+		fetch = true
+	}
+	defer cf.Close()
+	if cf != nil {
+		st, err := cf.Stat()
+		if err != nil {
+			log.Print(err)
+		}
+		exptime := time.Now().Add(-5 * time.Minute)
+		if st.ModTime().Before(exptime) {
+			fetch = true
+		}
+	}
+	if fetch {
 		rget, err := http.Get("https://finance.yahoo.com/quote/" + name)
 		if err != nil {
 			fmt.Println("ERROR ", err)
@@ -221,9 +224,7 @@ func quote(w http.ResponseWriter, r *http.Request) {
 		}
 		defer ct.Close()
 		rdoc = io.TeeReader(rget.Body, ct)
-	}
-	defer cf.Close()
-	if cf != nil {
+	} else {
 		rdoc = cf
 	}
 	O_O, err := ioutil.ReadAll(rdoc)
