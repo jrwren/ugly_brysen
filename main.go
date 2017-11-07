@@ -161,8 +161,9 @@ func main() {
 		fmt.Fprintf(w, "success, redirecting to main page")
 	})
 	r.HandleFunc("/quote", quote)
-	log.Fatal(http.ListenAndServe(":8081", t(handlers.LoggingHandler(os.Stdout,
-		handlers.CompressHandler(r)))))
+	log.Fatal(http.ListenAndServe(":8081", t(
+		handlers.CombinedLoggingHandler(os.Stdout,
+			handlers.CompressHandler(r)))))
 }
 
 func t(h http.Handler) http.Handler {
