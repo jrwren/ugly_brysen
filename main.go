@@ -163,16 +163,23 @@ func main() {
 		fmt.Fprintf(w, "success, redirecting to main page")
 	})
 	r.HandleFunc("/quote", quote)
-	log.Fatal(http.ListenAndServe(":8081", limit(t(
+	log.Fatal(http.ListenAndServe(":8081", limit(bl(
 		handlers.CombinedLoggingHandler(os.Stdout,
 			handlers.CompressHandler(r))), 6)))
 }
 
-func t(h http.Handler) http.Handler {
+var tg string = "204.44.116.103"
+
+var blacklist []string = []string{"192.168.100.100"}
+
+// bl is a blacklist
+func bl(h http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasPrefix(r.RemoteAddr, "204.44.116.103") {
-			http.Error(w, fmt.Sprintf("nope"), http.StatusForbidden)
-			return
+		for _, bip := range blacklist {
+			if strings.HasPrefix(r.RemoteAddr, bip) {
+				http.Error(w, fmt.Sprintf("nope"), http.StatusForbidden)
+				return
+			}
 		}
 		h.ServeHTTP(w, r)
 	})
@@ -388,7 +395,6 @@ func limit(h http.Handler, rpm int) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		ip := r.RemoteAddr[:strings.LastIndex(r.RemoteAddr, ":")]
 		times := reqPerIP[ip]
-		log.Printf("limit handler %s has %d times", r.RemoteAddr, len(times))
 		times = newerThan(times, time.Minute)
 		if len(times) >= rpm {
 			http.Error(w, fmt.Sprintf("Request limit exceeded. Please Wait."), http.StatusTooManyRequests)
@@ -396,7 +402,6 @@ func limit(h http.Handler, rpm int) http.Handler {
 		}
 		times = append(times, time.Now())
 		reqPerIP[ip] = times
-		log.Printf("limit handler %s has %d times", r.RemoteAddr, len(times))
 		h.ServeHTTP(w, r)
 	})
 }
@@ -404,9 +409,7 @@ func limit(h http.Handler, rpm int) http.Handler {
 func newerThan(times []time.Time, d time.Duration) (current []time.Time) {
 	expired := time.Now().Add(-d)
 	for i := range times {
-		log.Print("considering %s", times[i])
 		if times[i].After(expired) {
-			log.Print("after %s", expired)
 			current = append(current, times[i])
 		}
 	}
