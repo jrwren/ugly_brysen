@@ -72,6 +72,7 @@ var (
 func main() {
 	log.SetFlags(log.LstdFlags | log.Lshortfile)
 	sessions = make(map[string]User)
+	reqPerIP = make(map[string][]time.Time)
 	//loadSessions()
 	ctx := context.Background()
 	conf := &oauth2.Config{
@@ -162,9 +163,9 @@ func main() {
 		fmt.Fprintf(w, "success, redirecting to main page")
 	})
 	r.HandleFunc("/quote", quote)
-	log.Fatal(http.ListenAndServe(":8081", t(
+	log.Fatal(http.ListenAndServe(":8081", limit(t(
 		handlers.CombinedLoggingHandler(os.Stdout,
-			handlers.CompressHandler(r)))))
+			handlers.CompressHandler(r))), 6)))
 }
 
 func t(h http.Handler) http.Handler {
@@ -379,4 +380,35 @@ func minsl(i int, s string) int {
 		return len(s)
 	}
 	return i
+}
+
+var reqPerIP map[string][]time.Time
+
+func limit(h http.Handler, rpm int) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		ip := r.RemoteAddr[:strings.LastIndex(r.RemoteAddr, ":")]
+		times := reqPerIP[ip]
+		log.Printf("limit handler %s has %d times", r.RemoteAddr, len(times))
+		times = newerThan(times, time.Minute)
+		if len(times) >= rpm {
+			http.Error(w, fmt.Sprintf("Request limit exceeded. Please Wait."), http.StatusTooManyRequests)
+			return
+		}
+		times = append(times, time.Now())
+		reqPerIP[ip] = times
+		log.Printf("limit handler %s has %d times", r.RemoteAddr, len(times))
+		h.ServeHTTP(w, r)
+	})
+}
+
+func newerThan(times []time.Time, d time.Duration) (current []time.Time) {
+	expired := time.Now().Add(-d)
+	for i := range times {
+		log.Print("considering %s", times[i])
+		if times[i].After(expired) {
+			log.Print("after %s", expired)
+			current = append(current, times[i])
+		}
+	}
+	return current
 }
