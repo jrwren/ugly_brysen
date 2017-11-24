@@ -278,7 +278,16 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	summaryi := strings.Index(title, "Summary for")
 	title = title[summaryi+12:]
 	dashY := strings.Index(title, " - Yahoo Finance")
-	fullname := title[:dashY]
+	fullname := "?"
+	if dashY > 0 {
+		fullname = title[:dashY]
+	}
+	financialData := quote["financialData"].(map[string]interface{})
+	cprice := getrawfloat(financialData["currentPrice"])
+	if math.IsNaN(cprice) {
+		yahoo_unknown_handler(w, r)
+		return
+	}
 
 	price := quote["price"].(map[string]interface{})
 	defaultKeyStats := quote["defaultKeyStatistics"].(map[string]interface{}) // has forwardPE, enterpriseValue
@@ -289,9 +298,6 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	if math.IsNaN(float64(ps)) {
 		ps = getrawfloat(defaultKeyStats["priceToSalesTrailing12Months"])
 	}
-
-	financialData := quote["financialData"].(map[string]interface{})
-	cprice := getrawfloat(financialData["currentPrice"])
 
 	change := getrawfloat(price["regularMarketChange"])
 	changepct := getrawfloat(price["regularMarketChangePercent"]) * 100
@@ -414,4 +420,101 @@ func newerThan(times []time.Time, d time.Duration) (current []time.Time) {
 		}
 	}
 	return current
+}
+
+// What to do if yahoo quote can't find symbol
+func yahoo_unknown_handler(w http.ResponseWriter, r *http.Request) {
+	name := r.URL.Query().Get("name")
+	name = strings.TrimSpace(name)
+	if strings.ToLower(name) == "btc" {
+		if err := btc(w, r); err == nil {
+			return
+		}
+	}
+}
+
+/*
+[
+    {
+        "id": "bitcoin",
+        "name": "Bitcoin",
+        "symbol": "BTC",
+        "rank": "1",
+        "price_usd": "8151.34",
+        "price_btc": "1.0",
+        "24h_volume_usd": "3467280000.0",
+        "market_cap_usd": "136050853220",
+        "available_supply": "16690612.0",
+        "total_supply": "16690612.0",
+        "max_supply": "21000000.0",
+        "percent_change_1h": "-0.04",
+        "percent_change_24h": "4.88",
+        "percent_change_7d": "25.6",
+        "last_updated": "1511186652"
+    }
+]
+*/
+
+func btc(w http.ResponseWriter, r *http.Request) error {
+	var rdoc io.Reader
+	fetch := false
+	cf, err := os.Open(path.Join(cachepath, strings.ToLower(name)))
+	if err != nil {
+		fetch = true
+	}
+	defer cf.Close()
+	if cf != nil {
+		st, err := cf.Stat()
+		if err != nil {
+			log.Print(err)
+		}
+		exptime := time.Now().Add(-5 * time.Minute)
+		if st.ModTime().Before(exptime) {
+			fetch = true
+		}
+	}
+	if fetch {
+		rget, err := http.Get("https://api.coinmarketcap.com/v1/ticker/?limit=1&convert=usd" + name)
+		if err != nil {
+			fmt.Println("ERROR ", err)
+			w.WriteHeader(http.StatusServiceUnavailable)
+			return
+		}
+		defer rget.Body.Close()
+
+		ct, err := os.Create(path.Join(cachepath, strings.ToLower(name)))
+		if err != nil {
+			log.Print(err)
+		}
+		defer ct.Close()
+		rdoc = io.TeeReader(rget.Body, ct)
+	} else {
+		rdoc = cf
+	}
+	amss := make([]map[string]string)
+	json.NewDecoder(rdoc).Decode(amss)
+	log.Print(amss)
+	if strings.Contains(r.Header.Get("Accept"), "json") {
+		q := Quote{
+			Name:             "Bitcoin",
+			Symbol:           btc,
+			Price:            cprice,
+			Change:           change,
+			ChangePct:        changepct,
+			DayHigh:          dayhi,
+			DayLow:           daylo,
+			FiftyTwoWeekHigh: yrhi,
+			FiftyTwoWeekLow:  yrlo,
+			PE:               pe,
+			PB:               pb,
+			PS:               ps,
+			Div:              div,
+			Yield:            yield,
+		}
+		err = json.NewEncoder(w).Encode(q)
+		if err != nil {
+			log.Print(err)
+		}
+		return
+	}
 }
