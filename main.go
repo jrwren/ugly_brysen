@@ -201,6 +201,10 @@ func loadSessions() {
 func quote(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	name = strings.TrimSpace(name)
+	if name == "btc" {
+		btc(w, r, name)
+		return
+	}
 	var rdoc io.Reader
 	fetch := false
 	cf, err := os.Open(path.Join(cachepath, strings.ToLower(name)))
