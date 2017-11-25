@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/base64"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"io/ioutil"
@@ -255,7 +256,7 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	pagestore, ok := stores["PageStore"].(map[string]interface{})
 	if !ok {
 		log.Printf("pagestore not map[string]interface{} %#v\nstores:%#v\n", stores["PageStore"], stores)
-		w.WriteHeader(http.StatusServiceUnavailable)
+		yahoo_unknown_handler(w, r)
 		return
 	}
 	respjson["otherjunk"] = pagestore["pageData"]
@@ -284,7 +285,7 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	}
 	financialData := quote["financialData"].(map[string]interface{})
 	cprice := getrawfloat(financialData["currentPrice"])
-	if math.IsNaN(cprice) {
+	if math.IsNaN(float64(cprice)) {
 		yahoo_unknown_handler(w, r)
 		return
 	}
@@ -340,6 +341,10 @@ func quote(w http.ResponseWriter, r *http.Request) {
 	htmlResponseWithTitle(w, title, body)
 }
 
+type mfloat64 float64
+
+var mfloat64NaN = mfloat64(math.NaN())
+
 func getrawfloat(i interface{}) mfloat64 {
 	//return i.(map[string]interface{})["raw"].(float64)
 	m, ok := i.(map[string]interface{})
@@ -361,7 +366,13 @@ func getrawfloat(i interface{}) mfloat64 {
 	return mfloat64(f)
 }
 
-type mfloat64 float64
+func parseFloat(s string) mfloat64 {
+	f, err := strconv.ParseFloat(s, 64)
+	if err != nil {
+		return mfloat64(math.NaN())
+	}
+	return mfloat64(f)
+}
 
 func (f mfloat64) String() string {
 	if math.IsNaN(float64(f)) {
@@ -427,7 +438,7 @@ func yahoo_unknown_handler(w http.ResponseWriter, r *http.Request) {
 	name := r.URL.Query().Get("name")
 	name = strings.TrimSpace(name)
 	if strings.ToLower(name) == "btc" {
-		if err := btc(w, r); err == nil {
+		if err := btc(w, r, name); err == nil {
 			return
 		}
 	}
@@ -455,7 +466,7 @@ func yahoo_unknown_handler(w http.ResponseWriter, r *http.Request) {
 ]
 */
 
-func btc(w http.ResponseWriter, r *http.Request) error {
+func btc(w http.ResponseWriter, r *http.Request, name string) error {
 	var rdoc io.Reader
 	fetch := false
 	cf, err := os.Open(path.Join(cachepath, strings.ToLower(name)))
@@ -478,43 +489,60 @@ func btc(w http.ResponseWriter, r *http.Request) error {
 		if err != nil {
 			fmt.Println("ERROR ", err)
 			w.WriteHeader(http.StatusServiceUnavailable)
-			return
+			return err
 		}
 		defer rget.Body.Close()
 
 		ct, err := os.Create(path.Join(cachepath, strings.ToLower(name)))
 		if err != nil {
 			log.Print(err)
+			return err
 		}
 		defer ct.Close()
 		rdoc = io.TeeReader(rget.Body, ct)
 	} else {
 		rdoc = cf
 	}
-	amss := make([]map[string]string)
-	json.NewDecoder(rdoc).Decode(amss)
+	amss := make([]map[string]string, 0)
+	json.NewDecoder(rdoc).Decode(&amss)
 	log.Print(amss)
+	if len(amss) == 0 {
+		http.Error(w, "no map", http.StatusNotFound)
+		return errors.New("no btc")
+	}
+	am0 := amss[0]
+	fullname := "Bitcoin: the scam"
+	name = am0["symbol"]
+	cprice := parseFloat(am0["price_usd"])
+	change := parseFloat(am0["price_usd"]) * parseFloat(am0["percent_change_24h"])
+	changepct := parseFloat(am0["percent_change_24h"])
 	if strings.Contains(r.Header.Get("Accept"), "json") {
 		q := Quote{
-			Name:             "Bitcoin",
-			Symbol:           btc,
+			Name:             fullname,
+			Symbol:           am0["symbol"],
 			Price:            cprice,
 			Change:           change,
 			ChangePct:        changepct,
-			DayHigh:          dayhi,
-			DayLow:           daylo,
-			FiftyTwoWeekHigh: yrhi,
-			FiftyTwoWeekLow:  yrlo,
-			PE:               pe,
-			PB:               pb,
-			PS:               ps,
-			Div:              div,
-			Yield:            yield,
+			DayHigh:          mfloat64NaN,
+			DayLow:           mfloat64NaN,
+			FiftyTwoWeekHigh: mfloat64NaN,
+			FiftyTwoWeekLow:  mfloat64NaN,
+			PE:               mfloat64NaN,
+			PB:               mfloat64NaN,
+			PS:               mfloat64NaN,
+			Div:              mfloat64NaN,
+			Yield:            mfloat64NaN,
 		}
 		err = json.NewEncoder(w).Encode(q)
 		if err != nil {
 			log.Print(err)
+			return err
 		}
-		return
+	} else {
+		title := fmt.Sprintf("%s (%s) -> %.2f (%+.2f %+.2f%%) | bitcoins are stupid tuplips don't buy them.",
+			fullname, strings.ToUpper(name), cprice, change, changepct)
+		body := "<h1>" + title + "</h1>\n"
+		htmlResponseWithTitle(w, title, body)
 	}
+	return nil
 }
