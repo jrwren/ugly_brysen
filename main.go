@@ -518,7 +518,7 @@ func btc(w http.ResponseWriter, r *http.Request, name string) error {
 	fullname := "Bitcoin: the scam"
 	name = am0["symbol"]
 	cprice := parseFloat(am0["price_usd"])
-	change := parseFloat(am0["price_usd"]) * parseFloat(am0["percent_change_24h"])
+	change := parseFloat(am0["price_usd"]) * parseFloat(am0["percent_change_24h"]) / 100
 	changepct := parseFloat(am0["percent_change_24h"])
 	if strings.Contains(r.Header.Get("Accept"), "json") {
 		q := Quote{
